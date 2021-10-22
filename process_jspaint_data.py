@@ -17,6 +17,7 @@
 
 import json
 import drawSvg as draw
+import numpy as np
 from PIL import Image, ImageOps
 
 def process_paint(strokes_json, file_id,
@@ -28,7 +29,7 @@ def process_paint(strokes_json, file_id,
     # out_width/height: int size of file output
     # save_png: if true, save a png file from the svg data
     # render_jpg: if true, render+save a jpg file
-    # aggregate_masks: optionally, a dict with (string) body part names as keys masking images as valuess - only use if render_jpg == True
+    # aggregate_masks: optionally, a dict with (string) body part names as keys masking images as values - only use if render_jpg == True
     # flip_y: it seems the gorilla data is flipped about the y-axis. If True, the output will be flipped horizontally
 
     # this function calls subsequent functions to:
@@ -43,45 +44,56 @@ def process_paint(strokes_json, file_id,
     if len(strokes) > 0:
         width = strokes[0]['width']
         height = strokes[0]['height']
-        print(width, height)
+        # check if the image is front+back (in which case it will be square; otherwise height=width*2)
+        double_wide = True if height == width else False
         render_png(strokes, file_id, width, height, out_width, out_height, flip_y)
         if render_jpg:
             image = convert_jpg(file_id, out_width, out_height, whole_mask)
             if aggregate_masks:
-                aggregate_data = aggregate_zones(image, aggregate_masks)
+                aggregate_data = aggregate_zones(image, aggregate_masks, double_wide, width, height)
                 return aggregate_data
     else:
         print("There no paint data for ID {}".format(file_id))
 
-def aggregate_zones(image, masks):
+def aggregate_zones(image, masks, double_wide, width, height):
+    # we really only need the blue channel here
+    image_mat = np.array(image)[:,:,2]
     aggregate_data = {}
-    for part in masks:
-        zone_data = stamp_mask(image, masks[part])
-        aggegate_data[part] = zone_data
+    if double_wide:
+        # if it is double_wide, separate image into front and back halves,
+        halfway = int(width/2)
+        sides = {'front': image_mat[:,:halfway], 'back': image_mat[:,halfway:]}
+        for side in sides:
+            for part in masks:
+                zone_data = stamp_mask(sides[side], masks[part])
+                aggregate_data['{}_{}'.format(part,side)] = zone_data
+    else:
+        for part in masks:
+            zone_data = stamp_mask(image_mat, masks[part])
+            aggregate_data[part] = zone_data
     return aggregate_data
 
 def stamp_mask(image, mask):
-    pass
     # multiply image * mask
-    # calculate average?
-    # return average
+    stamped = np.multiply(image, mask)
+    # calculate average
+    average = round(np.nanmean(stamped)/255, 2)
+    return average
 
 def convert_jpg(file_id, out_width, out_height, whole_mask):
-    raw = Image.open("images/png/{}.png".format(file_id))
+    raw = Image.open("images_out/png/{}.png".format(file_id))
     raw.paste(whole_mask, (0,0), whole_mask) #second 'mask' needed to use the transparency
     rgb_masked = raw.convert('RGB')
-    rgb_masked.save("images/jpg/{}.jpg".format(file_id))
+    rgb_masked.save("images_out/jpg/{}.jpg".format(file_id), quality=95, subsampling=0)
     return rgb_masked
 
 def render_png(strokes, file_id, width, height, out_width, out_height, flip_y):
-
     d = draw.Drawing(width, height, displayInline=False)
     # for gaps in the drawing, can fill in the following be fill=NA?
     d.append(draw.Rectangle(0,0,width,height, fill='#808080'))
     for brushstroke in strokes:
         if flip_y:
             stroke_path = [[point[0], height-point[1]] for point in brushstroke['stroke']]
-            print(stroke_path)
         else:
             strok_path = brushstroke['stroke']
         points = [item for sublist in stroke_path for item in sublist]
@@ -94,4 +106,4 @@ def render_png(strokes, file_id, width, height, out_width, out_height, flip_y):
             stroke_linejoin='round',
             stroke_linecap='round'))
     d.setRenderSize(out_width, out_height)
-    d.savePng('images/png/{}.png'.format(file_id))
+    d.savePng('images_out/png/{}.png'.format(file_id))
